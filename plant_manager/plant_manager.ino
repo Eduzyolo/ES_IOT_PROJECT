@@ -2,6 +2,7 @@
 #include <WiFiClientSecure.h>
 #include <UniversalTelegramBot.h>
 #include <Servo.h>
+#include <EEPROM.h>
 
 #define R1 1.000                  //First Resistence Voltage divider --> to adjust
 #define R2 1.000                  //Second Resistence Voltage divider --> to adjust
@@ -13,10 +14,14 @@
 #define SIX_HOUR 3 * TWO_HOUR
 #define TWELWE_HOUR 2 * SIX_HOUR
 #define ONE_DAY 2 * TWELWE_HOUR
-
 #define WIFI_SSID ""
 #define WIFI_PASSWORD ""
 #define BOT_TOKEN ""
+#define OPEN_PIN(p1, p2) { digitalWrite(p1, HIGH); digitalWrite(p2, LOW); }
+#define CLOSE_PIN(p1, p2) { digitalWrite(p1, LOW); digitalWrite(p2, HIGH); }
+#define READ_PHOTO_PERCENT(pin) (100.0 * analogRead(pin) / 1023.0)
+#define SET_LED_BRIGHTNESS(ledPin, percent) analogWrite(ledPin, (1023 * percent) / 100)
+
 // #define HANDLE_MESSAGES 10
 #define TELEGRAM_DEBUG
 
@@ -29,6 +34,51 @@ const int ledPin = D1;
 unsigned long lastUpdateId = 0;
 
 // #define SLEEP_ON
+
+void adjustBrightness(int photoPin, int ledPin) {
+    float lightPercent = READ_PHOTO_PERCENT(photoPin);
+    static int currentBrightness = 0;
+
+    if (lightPercent < 50.0) {
+        // Gradually increase brightness
+        if (currentBrightness < 100) {
+            currentBrightness++;
+            SET_LED_BRIGHTNESS(ledPin, currentBrightness);
+            delay(100); // Delay to slow down brightness increase
+        }
+    } else {
+        // Reset brightness
+        currentBrightness = 0;
+        SET_LED_BRIGHTNESS(ledPin, currentBrightness);
+    }
+}
+
+void saveConfigToEEPROM(String jsonConfig) {
+    DynamicJsonDocument doc(1024);
+    deserializeJson(doc, jsonConfig);
+
+    EEPROM.begin(512);
+    for (int i = 0; i < jsonConfig.length(); ++i) {
+        EEPROM.write(i, jsonConfig[i]);
+    }
+    EEPROM.commit();
+    EEPROM.end();
+}
+
+void loadConfigFromEEPROM() {
+    EEPROM.begin(512);
+    String jsonConfig;
+    for (int i = 0; EEPROM.read(i) != 0 && i < 512; ++i) {
+        jsonConfig += (char)EEPROM.read(i);
+    }
+    EEPROM.end();
+
+    DynamicJsonDocument doc(1024);
+    deserializeJson(doc, jsonConfig);
+
+    // Use the doc as needed
+}
+
 
 float readVoltage() {                         //Function to compute the battery voltage
   int reading = analogRead(A0);               //Analog Read of the battery voltage
