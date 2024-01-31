@@ -4,6 +4,7 @@
 #include <Servo.h>
 #include <EEPROM.h>
 
+#define DEBUG
 #define R1 1.000                  //First Resistence Voltage divider --> to adjust
 #define R2 1.000                  //Second Resistence Voltage divider --> to adjust
 #define VBAT_MAX 3100       // milliVolts - 1.5V * 2 AA - fully charged batteries
@@ -98,10 +99,9 @@ uint8_t getBatteryPercentage(){
 
 void controlWatering(bool enable) {
   if (enable) {
-    // Logic to control servo for watering
-    myServo.write(90); // Example position, adjust as needed
+    OPEN_PIN();
   } else {
-    myServo.write(0); // Reset position
+    CLOSE_PIN();
   }
 }
 
@@ -110,6 +110,7 @@ void controlLEDs(bool enable) {
 }
 
 void handleNewMessage(telegramMessage &message) {
+#ifdef DEBUG
   Serial.print(message.date);
   Serial.print(" ");
   Serial.print(message.message_id);
@@ -117,6 +118,7 @@ void handleNewMessage(telegramMessage &message) {
   Serial.print(message.update_id);
   Serial.print(" ");
   Serial.println(message.text);
+#endif
    String chat_id = message.chat_id;
     String text = message.text;
 
@@ -178,32 +180,42 @@ void handleNewMessage(telegramMessage &message) {
 
 
 void setup() {
+#ifdef DEBUG
   Serial.begin(115200);
   Serial.println();
 
  // attempt to connect to Wifi network:
   Serial.print("Connecting to Wifi SSID ");
   Serial.print(WIFI_SSID);
+#endif
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   secured_client.setTrustAnchors(&cert); // Add root certificate for api.telegram.org
   while (WiFi.status() != WL_CONNECTED)
   {
+#ifdef DEBUG
     Serial.print(".");
+#endif
     delay(500);
   }
+#ifdef DEBUG
   Serial.print("\nWiFi connected. IP address: ");
   Serial.println(WiFi.localIP());
 
   Serial.print("Retrieving time: ");
+#endif
   configTime(0, 0, "pool.ntp.org"); // get UTC time via NTP
   time_t now = time(nullptr);
   while (now < 24 * 3600)
   {
+#ifdef DEBUG
     Serial.print(".");
+#endif
     delay(100);
     now = time(nullptr);
   }
-  Serial.println(now);
+#ifdef DEBUG
+    Serial.print(now);
+#endif
   // myServo.attach(servoPin);
   // pinMode(ledPin, OUTPUT);
   
