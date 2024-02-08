@@ -5,6 +5,14 @@
 #include <EEPROM.h>
 
 #define DEBUG
+#define PHOTO_PIN D0     // Pin for the photoresistor (analog input)
+#define VALVE_O_PIN D1   // Pin for the open valve (digital output)
+#define VALVE_C_PIN D2   // Pin for the close valve (digital output)
+#define LED_PIN D3       // Pin for the LED (digital output)
+#define BATT_PIN A0      // Pin for the Battery (analog input)
+
+#define FULL_LIGHT 100.0
+#define ZERO_LIGHT 0.0
 #define R1 1.000                  //First Resistence Voltage divider --> to adjust
 #define R2 1.000                  //Second Resistence Voltage divider --> to adjust
 #define VBAT_MAX 3100       // milliVolts - 1.5V * 2 AA - fully charged batteries
@@ -18,10 +26,10 @@
 #define WIFI_SSID ""
 #define WIFI_PASSWORD ""
 #define BOT_TOKEN ""
-#define OPEN_PIN(p1, p2) { digitalWrite(p1, HIGH); digitalWrite(p2, LOW); }
-#define CLOSE_PIN(p1, p2) { digitalWrite(p1, LOW); digitalWrite(p2, HIGH); }
-#define READ_PHOTO_PERCENT(pin) (100.0 * analogRead(pin) / 1023.0)
-#define SET_LED_BRIGHTNESS(ledPin, percent) analogWrite(ledPin, (1023 * percent) / 100)
+#define OPEN_VALVE() { digitalWrite(VALVE_O_PIN, HIGH); digitalWrite(VALVE_C_PIN, LOW); }
+#define CLOSE_VALVE() { digitalWrite(VALVE_O_PIN, LOW); digitalWrite(VALVE_C_PIN, HIGH); }
+#define READ_BRIGHTNESS() (100.0 * analogRead(PHOTO_PIN) / 1023.0)
+#define SET_LED_BRIGHTNESS(percent) analogWrite(LED_PIN, (1023 * percent) / 100)
 
 // #define HANDLE_MESSAGES 10
 #define TELEGRAM_DEBUG
@@ -34,55 +42,84 @@ const int servoPin = D2;
 const int ledPin = D1;
 unsigned long lastUpdateId = 0;
 
+
+static int LED_brightness = 0;
+static int Light_brightness = 0;
+static int battery_percentage = 0;
+static int time_to_sleep = 0;
+static bool valve_status = false; // false--> closed, true --> opened
+static int setted_LED_brightness = ZERO_LIGHT;
 // #define SLEEP_ON
 
-void adjustBrightness(int photoPin, int ledPin) {
-    float lightPercent = READ_PHOTO_PERCENT(photoPin);
-    static int currentBrightness = 0;
+// PID Constants
+#define KP 0.5
+#define KI 0.2
+#define KD 0.1
 
-    if (lightPercent < 50.0) {
-        // Gradually increase brightness
-        if (currentBrightness < 100) {
-            currentBrightness++;
-            SET_LED_BRIGHTNESS(ledPin, currentBrightness);
-            delay(100); // Delay to slow down brightness increase
-        }
-    } else {
-        // Reset brightness
-        currentBrightness = 0;
-        SET_LED_BRIGHTNESS(ledPin, currentBrightness);
-    }
+// Function to compute PID output
+int computePID(int lightPercentage, int targetPercentage) {
+    static int integral = 0;
+    static int lastError = 0;
+    int error = targetPercentage - lightPercentage;
+
+    // Proportional term
+    int P = KP * error;
+
+    // Integral term
+    integral += error;
+    int I = KI * integral;
+
+    // Derivative term
+    int derivative = error - lastError;
+    int D = KD * derivative;
+
+    int output = P + I + D;
+
+    // Update last error
+    lastError = error;
+
+    return output;
+}
+
+void adjustBrightness(float target) {
+  float lightPercent = READ_BRIGHTNESS();
+  while (lightPercent < target){
+    // bad thing can append here if the LED is faulted
+    // good is to add a timer
+    Light_brightness = computePID(lightPercent, target);
+    SET_LED_BRIGHTNESS(Light_brightness);
+    delay(100); // Adjust delay according to your requirements
+  }
 }
 
 void saveConfigToEEPROM(String jsonConfig) {
-    DynamicJsonDocument doc(1024);
-    deserializeJson(doc, jsonConfig);
+  DynamicJsonDocument doc(1024);
+  deserializeJson(doc, jsonConfig);
 
-    EEPROM.begin(512);
-    for (int i = 0; i < jsonConfig.length(); ++i) {
-        EEPROM.write(i, jsonConfig[i]);
-    }
-    EEPROM.commit();
-    EEPROM.end();
+  EEPROM.begin(512);
+  for (int i = 0; i < jsonConfig.length(); ++i) {
+      EEPROM.write(i, jsonConfig[i]);
+  }
+  EEPROM.commit();
+  EEPROM.end();
 }
 
 void loadConfigFromEEPROM() {
-    EEPROM.begin(512);
-    String jsonConfig;
-    for (int i = 0; EEPROM.read(i) != 0 && i < 512; ++i) {
-        jsonConfig += (char)EEPROM.read(i);
-    }
-    EEPROM.end();
+  EEPROM.begin(512);
+  String jsonConfig;
+  for (int i = 0; EEPROM.read(i) != 0 && i < 512; ++i) {
+      jsonConfig += (char)EEPROM.read(i);
+  }
+  EEPROM.end();
 
-    DynamicJsonDocument doc(1024);
-    deserializeJson(doc, jsonConfig);
-
-    // Use the doc as needed
+  DynamicJsonDocument doc(1024);
+  deserializeJson(doc, jsonConfig);
+  // Use the doc as needed
 }
 
 
 float readVoltage() {                         //Function to compute the battery voltage
-  int reading = analogRead(A0);               //Analog Read of the battery voltage
+  int reading = analogRead(BATT_PIN);               //Analog Read of the battery voltage
   float volt = map(reading, 0, 1023, 0, 330); //Mapping from AnalogRead to Volt
   volt = (((R1 + R2) * volt ) / R2) / 100.0;  //Compute the battery voltage
   return volt;
@@ -99,14 +136,10 @@ uint8_t getBatteryPercentage(){
 
 void controlWatering(bool enable) {
   if (enable) {
-    OPEN_PIN();
+    OPEN_VALVE();
   } else {
-    CLOSE_PIN();
+    CLOSE_VALVE();
   }
-}
-
-void controlLEDs(bool enable) {
-  digitalWrite(ledPin, enable ? HIGH : LOW);
 }
 
 void handleNewMessage(telegramMessage &message) {
@@ -121,63 +154,77 @@ void handleNewMessage(telegramMessage &message) {
 #endif
    String chat_id = message.chat_id;
     String text = message.text;
+    String msg = "";
 
   if (text == "/status") {
     // You need to implement the logic to get the status from your sensors
-    String statusMessage = "Plant Status: [Sensor Readings]";
-    bot.sendMessage(chat_id, statusMessage, "", 0);
+    msg = "Plant Status: \n";
+    msg += "LED Brightness: ";
+    msg += String(LED_brightness) + "\n";
+
+    msg += "Light Brightness: ";
+    msg += String(Light_brightness) + "\n";
+
+    msg += "Battery Percentage: ";
+    msg += String(battery_percentage) + "\n";
+
+    msg += "Time to Sleep: ";
+    msg += String(time_to_sleep) + "\n";
+
+    msg += "Valve Status: ";
+    msg += valve_status ? "Opened" : "Closed";
+    msg += "\n";
   } else if (text == "/water_now") {
+    msg = "Watering now";
     controlWatering(true);
-    bot.sendMessage(chat_id, "Watering now", "", 0);
   } else if (text == "/stop_watering") {
     controlWatering(false);
-    bot.sendMessage(chat_id, "Watering stopped", "", 0);
+    msg = "Watering stopped";
   } else if (text == "/set_schedule") {
     // Implement scheduling logic here
-    bot.sendMessage(chat_id, "Schedule set. [Details]", "", 0);
+    msg = "Schedule set";
   } else if (text == "/cancel_schedule") {
     // Implement cancel scheduling logic here
-    bot.sendMessage(chat_id, "Watering schedule canceled", "", 0);
-  } else if (text == "/adjust_water_amount") {
-    // Implement logic to adjust water amount
-    bot.sendMessage(chat_id, "Water amount adjusted", "", 0);
-  } else if (text == "/light_status") {
+    msg = "Watering schedule canceled";
+  }  else if (text == "/light_status") {
     // Implement logic to report LED status
-    bot.sendMessage(chat_id, "LED Status: [On/Off]", "", 0);
-  } else if (text == "/toggle_lights") {
-    static bool lightStatus = false;
-    lightStatus = !lightStatus;
-    controlLEDs(lightStatus);
-    bot.sendMessage(chat_id, "Toggled lights", "", 0);
+    msg = "LED Status:";
+    msg += String(LED_brightness) + "\n";
+  } else if (text == "/lights_on") {
+    adjustBrightness(FULL_LIGHT);
+    msg = "Turning lights ON!";
+  } else if (text == "/lights_off") {
+    adjustBrightness(ZERO_LIGHT);
+    msg = "Turning lights OFF!";
   } else if (text == "/set_light_schedule") {
     // Implement light scheduling logic here
-    bot.sendMessage(chat_id, "Light schedule set", "", 0);
+    msg = "Light schedule set";
   } else if (text == "/get_config") {
     // Implement logic to get current configuration
-    bot.sendMessage(chat_id, "Current Config: [Details]", "", 0);
+    msg = "Current Config: [Details]";
   } else if (text == "/help" || text == "/commands") {
-    String helpMessage = "Available Commands:\n";
-    helpMessage += "/status - Get system status\n";
-    helpMessage += "/water_now - Trigger immediate watering\n";
-    helpMessage += "/stop_watering - Stop watering\n";
-    helpMessage += "/set_schedule - Set watering schedule\n";
-    helpMessage += "/cancel_schedule - Cancel watering schedule\n";
-    helpMessage += "/adjust_water_amount - Adjust water amount\n";
-    helpMessage += "/light_status - Get LED status\n";
-    helpMessage += "/toggle_lights - Toggle LEDs on/off\n";
-    helpMessage += "/set_light_schedule - Set light schedule\n";
-    helpMessage += "/get_config - Get current configuration\n";
-    helpMessage += "/help - Show this help message\n";
-    bot.sendMessage(chat_id, helpMessage, "", 0);
+    msg = "Available Commands:\n";
+    msg += "/status - Get system status\n";
+    msg += "/water_now - Trigger immediate watering\n";
+    msg += "/stop_watering - Stop watering\n";
+    msg += "/set_schedule - Set watering schedule\n";
+    msg += "/cancel_schedule - Cancel watering schedule\n";
+    msg += "/adjust_water_amount - Adjust water amount\n";
+    msg += "/light_status - Get LED status\n";
+    msg += "/toggle_lights - Toggle LEDs on/off\n";
+    msg += "/set_light_schedule - Set light schedule\n";
+    msg += "/get_config - Get current configuration\n";
+    msg += "/help - Show this help message\n";
     } else {
     // Response for unknown command
-    bot.sendMessage(chat_id, "Unknown command. Use /help to see available commands.", "",0);
+    msg = "Unknown command. Use /help to see available commands.";
     }
+#if DEBUG
+  Serial.println(msg);
+#endif
+  bot.sendMessage(chat_id, msg, "", 0);
   bot.last_message_received = message.update_id;
 }
-
-
-
 
 void setup() {
 #ifdef DEBUG
@@ -216,16 +263,14 @@ void setup() {
 #ifdef DEBUG
     Serial.print(now);
 #endif
-  // myServo.attach(servoPin);
-  // pinMode(ledPin, OUTPUT);
   
 }
 
 void loop() {
   int numNewMessages = bot.getUpdates(bot.last_message_received +1);
 
-    for (int i = 0; i < numNewMessages; i++) {
-        // Process each message
-        handleNewMessage(bot.messages[i]);
-    }
+  for (int i = 0; i < numNewMessages; i++) {
+      // Process each message
+      handleNewMessage(bot.messages[i]);
+  }
 }
