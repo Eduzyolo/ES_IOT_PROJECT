@@ -1,7 +1,6 @@
 #include <ESP8266WiFi.h>
 #include <WiFiClientSecure.h>
 #include <UniversalTelegramBot.h>
-#include <Servo.h>
 #include <EEPROM.h>
 
 #define DEBUG
@@ -13,6 +12,8 @@
 
 #define FULL_LIGHT 100.0
 #define ZERO_LIGHT 0.0
+#define R1 1.000                  //First Resistence Voltage divider --> to adjust
+#define R2 1.000                  //Second Resistence Voltage divider --> to adjust
 #define VBAT_MAX 3100       // milliVolts - 1.5V * 2 AA - fully charged batteries
 #define VBAT_MIN 2800       // milliVolts - due to battery regulator, lower than this we consider the batteries discharged
 #define ONE_HOUR 3600000000ULL 
@@ -26,6 +27,8 @@
 #define BOT_TOKEN "6764956502:AAEszNKl0k1elYO1tfeu7JQ_yYgfCP3NiLU"
 
 
+enum stat_enum {ON, OFF};
+enum batt_status_enum {LEVEL_OK, LEVEL_LOW};
 
 // Define the struct to hold configuration data
 struct Configuration {
@@ -40,9 +43,17 @@ struct Configuration {
     int startHour;
     int duration;
     int repeatInterval;
-    int brightness;
   } water;
 };
+
+struct Status {
+  stat_enum LED_status = OFF;
+  int Light_brightness = 0;
+  batt_status_enum battery_status = LEVEL_OK;
+  stat_enum valve_status = OFF; 
+  int time_to_sleep = 0;
+};
+
 
 // #define HANDLE_MESSAGES 10
 #define TELEGRAM_DEBUG
@@ -50,19 +61,13 @@ struct Configuration {
 X509List cert(TELEGRAM_CERTIFICATE_ROOT);
 WiFiClientSecure secured_client;
 UniversalTelegramBot bot(BOT_TOKEN, secured_client);
-Servo myServo;
-const int servoPin = D2;
-const int ledPin = D1;
 unsigned long lastUpdateId = 0;
 
 
-static int LED_brightness = 0;
-static int Light_brightness = 0;
-static int battery_percentage = 0;
-static int time_to_sleep = 0;
-static bool valve_status = false; // false--> closed, true --> opened
-static int setted_LED_brightness = ZERO_LIGHT;
-static Configuration config;
+
+
+Configuration config;
+Status status;
 // #define SLEEP_ON
 
 // PID Constants
@@ -72,8 +77,8 @@ static Configuration config;
 
 // Function to compute PID output scaled to a value between 0 and 100
 int computePID(int lightPercentage, int targetPercentage) {
-    static int integral = 0;
-    static int lastError = 0;
+    int integral = 0;
+    int lastError = 0;
     int error = targetPercentage - lightPercentage;
 
     // Proportional term
@@ -100,13 +105,15 @@ int computePID(int lightPercentage, int targetPercentage) {
 }
 
 void adjustBrightness(float target) {
-  Light_brightness = 100.0 * analogRead(PHOTO_PIN) / 1023.0;
+  status.Light_brightness = 100.0 * analogRead(PHOTO_PIN) / 1023.0;
   // target = target > 90 ? 85 : target;  
   // target = target < 50 ? target : 55;
-  if (target < 50){
-    LED_brightness = 0;
+  if (target < 50 && status.Light_brightness > 50 ){
+    status.LED_status = OFF;
     digitalWrite(LED_PIN, LOW);
   }else{
+    status.LED_status = ON;
+    digitalWrite(LED_PIN,HIGH);
 //     // adjusting to a reachable percentage
 //     target = target > 90 ? 85 : target; 
 //   // brightness < 50 --> dark, brightness > 80 --> full light 
@@ -124,7 +131,6 @@ void adjustBrightness(float target) {
 //       Light_brightness = 100.0 * analogRead(PHOTO_PIN) / 1023.0;
 //     }
 //     analogWrite(LED_PIN, (1023 * LED_brightness) / 100);
-    digitalWrite(LED_PIN,HIGH);
   }
 }
 
@@ -144,7 +150,6 @@ void saveConfigToEEPROM() {
   waterObj["startHour"] = config.water.startHour;
   waterObj["duration"] = config.water.duration;
   waterObj["repeatInterval"] = config.water.repeatInterval;
-  waterObj["brightness"] = config.water.brightness;
 
   // Serialize the JSON to a string
   String jsonConfig;
@@ -184,7 +189,6 @@ void loadConfigFromEEPROM() {
   config.water.startHour = waterObj["startHour"];
   config.water.duration = waterObj["duration"];
   config.water.repeatInterval = waterObj["repeatInterval"];
-  config.water.brightness = waterObj["brightness"];
 }
 
 String getConfigString() {
@@ -202,12 +206,11 @@ String getConfigString() {
   configStr += "  Start Hour: " + String(config.water.startHour) + "\n";
   configStr += "  Duration: " + String(config.water.duration) + " hours\n";
   configStr += "  Repeat Interval: " + String(config.water.repeatInterval) + " hours\n";
-  configStr += "  Brightness: " + String(config.water.brightness) + "\n";
 
   return configStr;
 }
 
-static void initDefaultConfig() {
+void initDefaultConfig() {
   // Light configuration
   config.light.startHour = 0;
   config.light.duration = 0;
@@ -218,29 +221,76 @@ static void initDefaultConfig() {
   config.water.startHour = 0;
   config.water.duration = 0;
   config.water.repeatInterval = 0;
-  config.water.brightness = 0;
 }
 
-float readVoltage() {                         //Function to compute the battery voltage
+float readVoltage() { 
   int reading = analogRead(BATT_PIN);               //Analog Read of the battery voltage
-  float volt = reading * (VBAT_MAX / 1023.00) * 2;
+  float volt = map(reading, 0, 1023, 0, 330); //Mapping from AnalogRead to Volt
+  volt = (((R1 + R2) * volt ) / R2) / 100.0;  //Compute the battery voltage
   return volt;
 }
 
-uint8_t getBatteryPercentage(){
+void setBatteryPercentage(){
   float voltage = readVoltage();
-  uint8_t percentage_battery = (voltage / VBAT_MAX) * 100.0;
-  return percentage_battery;
+  uint8_t percentage_battery = 100.0 / (VBAT_MAX - VBAT_MIN) * 1.0 * (voltage*1000.0 - VBAT_MIN);
+  if (percentage_battery > 50) status.battery_status = LEVEL_OK;
+  if (percentage_battery < 0) status.battery_status = LEVEL_LOW;
 }
-
 
 void controlWatering(bool enable) {
   if (enable) {
-    digitalWrite(VALVE_C_PIN, HIGH); digitalWrite(VALVE_O_PIN, LOW);
+
+    digitalWrite(VALVE_C_PIN, HIGH); 
+    digitalWrite(VALVE_O_PIN, LOW);
   } else {
-    digitalWrite(VALVE_O_PIN, HIGH); digitalWrite(VALVE_C_PIN, LOW);
+    digitalWrite(VALVE_O_PIN, HIGH); 
+    digitalWrite(VALVE_C_PIN, LOW);
   }
 }
+
+// // Function to send inline keyboard for light configuration
+// void sendLightConfigurationKeyboard(String chat_id) {
+//   String keyboard = "[[{\"text\":\"Set Start Hour\",\"callback_data\":\"set_start_hour_light\"},{\"text\":\"Set Duration\",\"callback_data\":\"set_duration_light\"}],"
+//                     "[{\"text\":\"Set Repeat Interval\",\"callback_data\":\"set_repeat_interval_light\"},{\"text\":\"Set Brightness\",\"callback_data\":\"set_brightness_light\"}]]";
+//   bot.sendMessageWithInlineKeyboard(chat_id, "Configure Light Settings:", keyboard, "");
+// }
+
+// // Function to send inline keyboard for water configuration
+// void sendWaterConfigurationKeyboard(String chat_id) {
+//   String keyboard = "[[{\"text\":\"Set Start Hour\",\"callback_data\":\"set_start_hour_water\"},{\"text\":\"Set Duration\",\"callback_data\":\"set_duration_water\"}],"
+//                     "[{\"text\":\"Set Repeat Interval\",\"callback_data\":\"set_repeat_interval_water\"}]]";
+//   bot.sendMessageWithInlineKeyboard(chat_id, "Configure Water Settings:", keyboard, "");
+// }
+
+// // Function to send inline keyboard for water configuration
+// void sendConfigurationKeyboard(String chat_id) {
+//   String keyboard = "[[{\"text\":\"Set Water\",\"callback_data\":\"set_water\"},{\"text\":\"Set Light\",\"callback_data\":\"set_light\"}]]";
+//   bot.sendMessageWithInlineKeyboard(chat_id, "Configure Settings:", keyboard, "");
+// }
+
+// // Function to handle inline keyboard button presses
+// void handleCallbackQueries(telegramMessage &message) {
+//     String chat_id = message.chat_id;
+//     String callback_data = message.text;
+//     String msg = "";
+//   if (callback_data == "set_start_hour_light") {
+//     // Handle setting start hour for light
+//   } else if (callback_data == "set_duration_light") {
+//     // Handle setting duration for light
+//   } else if (callback_data == "set_repeat_interval_light") {
+//     // Handle setting repeat interval for light
+//   } else if (callback_data == "set_brightness_light") {
+//     // Handle setting brightness for light
+//   } else if (callback_data == "set_start_hour_water") {
+//     // Handle setting start hour for water
+//   } else if (callback_data == "set_duration_water") {
+//     // Handle setting duration for water
+//   } else if (callback_data == "set_repeat_interval_water") {
+//     // Handle setting repeat interval for water
+//   }
+//   bot.sendMessage(chat_id, msg, "", 0);
+//   bot.last_message_received = message.update_id;
+// }
 
 #ifdef DEBUG
 void print_on_serial_config(){
@@ -260,8 +310,6 @@ void print_on_serial_config(){
   Serial.println(config.water.duration);
   Serial.print("Water Repeat Interval: ");
   Serial.println(config.water.repeatInterval);
-  Serial.print("Water Brightness: ");
-  Serial.println(config.water.brightness);
 
 }
 #endif
@@ -282,43 +330,48 @@ void handleNewMessage(telegramMessage &message) {
 
   if (text == "/status") {
     // You need to implement the logic to get the status from your sensors
+    status.Light_brightness = 100.0 - (100.0 * analogRead(PHOTO_PIN) / 1023.0);
+    setBatteryPercentage();
     msg = "Plant Status: \n";
-    msg += "LED Brightness: ";
-    msg += String(LED_brightness) + "\n";
+    msg += "LED Status: ";
+    msg +=  status.LED_status == ON ? "ON" : "OFF";
+    msg += "\n";
 
     msg += "Light Brightness: ";
-    msg += String(Light_brightness) + "\n";
+    msg += String(status.Light_brightness) + "%\n";
 
-    msg += "Battery Percentage: ";
-    msg += String(battery_percentage) + "\n";
+    msg += "Battery Status: ";
+    msg +=  status.battery_status == ON ? "OK" : "Low battery";
+    msg += "\n";
 
     msg += "Time to Sleep: ";
-    msg += String(time_to_sleep) + "\n";
+    msg += String(status.time_to_sleep) + "\n";
 
     msg += "Valve Status: ";
-    msg += valve_status ? "Opened" : "Closed";
+    msg += status.valve_status == ON ? "Opened" : "Closed";
     msg += "\n";
   } else if (text == "/water_now") {
+    status.valve_status = ON;
     controlWatering(true);
     msg = "Watering now";
   } else if (text == "/stop_watering") {
+    status.valve_status = OFF;
     controlWatering(false);
     msg = "Watering stopped";
   } else if (text == "/set_schedule") {
     // Implement scheduling logic here
-    msg = "Schedule setted";
+    // sendConfigurationKeyboard(chat_id);
+    
   } else if (text == "/cancel_schedule") {
     // Implement cancel scheduling logic here
     initDefaultConfig();
     msg = "Watering schedule canceled";
-  }  else if (text == "/light_status") {
-    // Implement logic to report LED status
-    msg = "LED Status:";
-    msg += String(LED_brightness) + "\n";
   } else if (text == "/lights_on") {
+    status.LED_status = ON;
     adjustBrightness(FULL_LIGHT);
     msg = "Turning lights ON!";
   } else if (text == "/lights_off") {
+    status.LED_status = OFF;
     adjustBrightness(ZERO_LIGHT);
     msg = "Turning lights OFF!";
   } else if (text == "/set_light_schedule") {
@@ -340,15 +393,17 @@ void handleNewMessage(telegramMessage &message) {
     msg += "/set_light_schedule - Set light schedule\n";
     msg += "/get_config - Get current configuration\n";
     msg += "/help - Show this help message\n";
-    } else {
-    // Response for unknown command
-    msg = "Unknown command. Use /help to see available commands.";
+    // } else if (bot.messages[bot.last_message_received].type == "callback_query"){
+    
+    } else{
+      // Response for unknown command
+      msg = "Unknown command. Use /help to see available commands.";
     }
 #ifdef DEBUG
   Serial.println(msg);
 #endif
-  bot.sendMessage(chat_id, msg, "", 0);
-  bot.last_message_received = message.update_id;
+    bot.sendMessage(chat_id, msg, "", 0);
+    bot.last_message_received = message.update_id;
 }
 
 void setup() {
@@ -394,11 +449,28 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
 }
 
-void loop() {
-  int numNewMessages = bot.getUpdates(bot.last_message_received +1);
-
-  for (int i = 0; i < numNewMessages; i++) {
-      // Process each message
+void handleNewMessages(int n_messages){
+  for (int i = 0; i < n_messages; i++)
+  {
+    // if (bot.messages[i].type == "callback_query")
+    // {
+    //   handleCallbackQueries(bot.messages[i]);
+    // }
+    // else
+    // {
       handleNewMessage(bot.messages[i]);
+    // }
   }
+}
+
+void loop() {
+  int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+
+  while (numNewMessages)
+  {
+    Serial.println("got response");
+    handleNewMessages(numNewMessages);
+    numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  }
+
 }
