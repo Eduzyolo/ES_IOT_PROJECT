@@ -7,8 +7,8 @@
 #define PHOTO_PIN A0     // Pin for the photoresistor (analog input)
 #define VALVE_O_PIN D1   // Pin for the open valve (digital output)
 #define VALVE_C_PIN D2   // Pin for the close valve (digital output)
-#define LED_PIN D3       // Pin for the LED (digital output)
-#define BATT_PIN D0      // Pin for the Battery (analog input)
+#define LED_PIN D4       // Pin for the LED (digital output)
+#define BATT_PIN D5      // Pin for the Battery (analog input)
 
 #define FULL_LIGHT 100.0
 #define ZERO_LIGHT 0.0
@@ -16,14 +16,23 @@
 #define R2 1.000                  //Second Resistence Voltage divider --> to adjust
 #define VBAT_MAX 3100       // milliVolts - 1.5V * 2 AA - fully charged batteries
 #define VBAT_MIN 2800       // milliVolts - due to battery regulator, lower than this we consider the batteries discharged
-#define ONE_HOUR 3600000000ULL 
-#define TWO_HOUR 2 * ONE_HOUR
-#define FOUR_HOUR 2 * TWO_HOUR
-#define SIX_HOUR 3 * TWO_HOUR
-#define TWELWE_HOUR 2 * SIX_HOUR
-#define ONE_DAY 2 * TWELWE_HOUR
-#define WIFI_SSID "some"
-#define WIFI_PASSWORD "ciao0000"
+const int FIVE_SECONDS = 5 / 60; // Less than a minute, rounded down to 0
+const int ONE_MINUTE = 1;
+const int FIVE_MINUTES = 5;
+const int QUARTER_HOUR = 15;
+const int HALF_HOUR = 30;
+const int ONE_HOUR = 60;
+const int TWO_HOUR = 120;
+const int FOUR_HOUR = 240;
+const int SIX_HOUR = 360;
+const int TWELVE_HOUR = 720;
+const int ONE_DAY = 1440; // 24 hours * 60 minutes
+const byte signature[] = {0xAB, 0xCD, 0xEF}; // Example signature
+const int signatureLength = sizeof(signature);
+
+
+#define WIFI_SSID "Casa"
+#define WIFI_PASSWORD "C@as4N0$t&ra"
 #define BOT_TOKEN "6764956502:AAEszNKl0k1elYO1tfeu7JQ_yYgfCP3NiLU"
 
 
@@ -62,6 +71,7 @@ X509List cert(TELEGRAM_CERTIFICATE_ROOT);
 WiFiClientSecure secured_client;
 UniversalTelegramBot bot(BOT_TOKEN, secured_client);
 unsigned long lastUpdateId = 0;
+bool sleep = false;
 
 
 
@@ -154,10 +164,13 @@ void saveConfigToEEPROM() {
   // Serialize the JSON to a string
   String jsonConfig;
   serializeJson(root, jsonConfig);
-
+  // First, write the signature
+  for (int i = 0; i < signatureLength; ++i) {
+    EEPROM.write(i, signature[i]);
+  }
   // Write the JSON string to EEPROM
   for (int i = 0; i < jsonConfig.length(); ++i) {
-    EEPROM.write(i, jsonConfig[i]);
+    EEPROM.write(signatureLength + i, jsonConfig[i]);
   }
   EEPROM.commit();
   EEPROM.end();
@@ -169,7 +182,7 @@ void loadConfigFromEEPROM() {
 
   // Read the JSON string from EEPROM
   String jsonConfig;
-  for (int i = 0; EEPROM.read(i) != 0 && i < 512; ++i) {
+  for (int i = signatureLength; EEPROM.read(i) != 0 && i < 512; ++i) {
     jsonConfig += (char)EEPROM.read(i);
   }
   EEPROM.end();
@@ -191,36 +204,157 @@ void loadConfigFromEEPROM() {
   config.water.repeatInterval = waterObj["repeatInterval"];
 }
 
+bool isValidConfigInEEPROM() {
+  EEPROM.begin(512);
+
+  for (int i = 0; i < signatureLength; ++i) {
+    if (EEPROM.read(i) != signature[i]) {
+      EEPROM.end();
+      return false; // Signature doesn't match
+    }
+  }
+
+  EEPROM.end();
+  return true; // Signature matches, valid configuration is likely present
+}
+
+// Function to convert an integer representing time (in minutes since midnight) to HH:MM format
+String convertIntToTimeString(int minutes) {
+  int hours = minutes / 60;
+  int mins = minutes % 60;
+  return String(hours) + ":" + (mins < 10 ? "0" : "") + String(mins);
+}
+
+String convertMillisToDurationString(unsigned long durationMinutes) {
+  String durationStr = "";
+  if (durationMinutes >= 1440) { // More than or equal to a day
+    unsigned long days = durationMinutes / 1440;
+    durationStr += String(days) + " days";
+  } else if (durationMinutes >= 60) { // More than or equal to an hour
+    unsigned long hours = durationMinutes / 60;
+    durationStr += String(hours) + " hours";
+  } else {
+    durationStr += String(durationMinutes) + " minutes";
+  }
+  return durationStr;
+}
+
+
+
+// Function to convert time string (HH:MM) to integer
+int convertTimeStringToInt(String timeStr) {
+  int hours = timeStr.substring(0, 2).toInt();
+  int minutes = timeStr.substring(3).toInt();
+  return hours * 60 + minutes; // Convert to minutes
+}
+
+unsigned long convertDurationStringToMillis(String durationStr) {
+  unsigned long duration = 0;
+  int value;
+  if (durationStr.indexOf(" day") != -1) {
+    value = durationStr.substring(0, durationStr.indexOf(" day")).toInt();
+    duration += value * 1440; // Days to minutes
+  }
+  if (durationStr.indexOf(" hour") != -1) {
+    value = durationStr.substring(0, durationStr.indexOf(" hour")).toInt();
+    duration += value * 60; // Hours to minutes
+  }
+  if (durationStr.indexOf(" minute") != -1) {
+    value = durationStr.substring(0, durationStr.indexOf(" minute")).toInt();
+    duration += value; // Minutes remain as minutes
+  }
+  return duration;
+}
+
+
 String getConfigString() {
   String configStr;
   
   // Light configuration
   configStr += "Light Configuration:\n";
-  configStr += "  Start Hour: " + String(config.light.startHour) + "\n";
-  configStr += "  Duration: " + String(config.light.duration) + " hours\n";
-  configStr += "  Repeat Interval: " + String(config.light.repeatInterval) + " hours\n";
+  configStr += "  Start Hour: " + convertIntToTimeString(config.light.startHour) + "\n";
+  configStr += "  Duration: " + convertMillisToDurationString(config.light.duration) + "\n";
+  configStr += "  Repeat Interval: " + convertMillisToDurationString(config.light.repeatInterval) + "\n";
   configStr += "  Brightness: " + String(config.light.brightness) + "\n";
   
   // Water configuration
   configStr += "Water Configuration:\n";
-  configStr += "  Start Hour: " + String(config.water.startHour) + "\n";
-  configStr += "  Duration: " + String(config.water.duration) + " hours\n";
-  configStr += "  Repeat Interval: " + String(config.water.repeatInterval) + " hours\n";
+  configStr += "  Start Hour: " + convertIntToTimeString(config.water.startHour) + "\n";
+  configStr += "  Duration: " + convertMillisToDurationString(config.water.duration) + "\n";
+  configStr += "  Repeat Interval: " + convertMillisToDurationString(config.water.repeatInterval) + "\n";
 
   return configStr;
 }
 
+void setConfigFromString(String configString) {
+  // Light configuration
+  int index = configString.indexOf("Light Configuration:");
+  if (index != -1) {
+    // Parse start hour
+    index = configString.indexOf("Start Hour: ") + 12;
+    int endIndex = configString.indexOf('\n', index);
+    String startHourStr = configString.substring(index, endIndex);
+    config.light.startHour = convertTimeStringToInt(startHourStr);
+    // Parse duration
+    index = configString.indexOf("Duration: ") + 10;
+    endIndex = configString.indexOf('\n', index);
+    String durationStr = configString.substring(index, endIndex);
+    durationStr.trim(); // Correct use of trim() - modifies the string in place
+    config.light.duration = convertDurationStringToMillis(durationStr);
+
+    // Parse repeat interval
+    index = configString.indexOf("Repeat Interval: ") + 17;
+    endIndex = configString.indexOf('\n', index);
+    String repeatIntervalStr = configString.substring(index, endIndex);
+    repeatIntervalStr.trim(); // Correct use of trim() - modifies the string in place
+    config.light.repeatInterval = convertDurationStringToMillis(repeatIntervalStr);
+
+    // Parse brightness
+    index = configString.indexOf("Brightness: ") + 12;
+    endIndex = configString.indexOf('\n', index);
+    String brightnessStr = configString.substring(index, endIndex);
+    brightnessStr.trim(); // Apply trim() here as well, if needed
+    config.light.brightness = brightnessStr.toInt();
+  }
+
+  // Water configuration
+  index = configString.indexOf("Water Configuration:");
+  if (index != -1) {
+      // Parse start hour
+      index = configString.lastIndexOf("Start Hour: ") + 12;
+      int endIndex = configString.indexOf('\n', index);
+      String startHourStr = configString.substring(index, endIndex);
+      startHourStr.trim(); // Trim the string in place
+      config.water.startHour = convertTimeStringToInt(startHourStr); // Convert start hour to integer (minutes since midnight)
+
+      // Parse duration
+      index = configString.lastIndexOf("Duration: ") + 10;
+      endIndex = configString.indexOf('\n', index);
+      String durationStr = configString.substring(index, endIndex);
+      durationStr.trim(); // Trim the string in place
+      config.water.duration = convertDurationStringToMillis(durationStr); // Convert duration string to minutes
+
+      // Parse repeat interval
+      index = configString.lastIndexOf("Repeat Interval: ") + 17;
+      endIndex = configString.indexOf('\n', index);
+      String repeatIntervalStr = configString.substring(index, endIndex);
+      repeatIntervalStr.trim(); // Trim the string in place
+      config.water.repeatInterval = convertDurationStringToMillis(repeatIntervalStr); // Convert repeat interval string to minutes
+  }
+
+}
+
 void initDefaultConfig() {
   // Light configuration
-  config.light.startHour = 0;
-  config.light.duration = 0;
-  config.light.repeatInterval = 0;
-  config.light.brightness = 0;
+  config.light.startHour = 0; // Start hour remains unchanged
+  config.light.duration = FIVE_MINUTES; // Default duration (5 minutes)
+  config.light.repeatInterval = HALF_HOUR; // Default repeat interval (30 minutes)
+  config.light.brightness = 50; // Brightness remains unchanged
 
   // Water configuration
   config.water.startHour = 0;
-  config.water.duration = 0;
-  config.water.repeatInterval = 0;
+  config.water.duration = FIVE_MINUTES; // Default duration (5 minutes)
+  config.water.repeatInterval = HALF_HOUR; // Default repeat interval (30 minutes)
 }
 
 float readVoltage() { 
@@ -247,6 +381,51 @@ void controlWatering(bool enable) {
     digitalWrite(VALVE_C_PIN, LOW);
   }
 }
+
+void powerOffWiFi() {
+  WiFi.disconnect(); // Disconnect from WiFi network
+  WiFi.mode(WIFI_OFF); // Turn off WiFi
+}
+
+// void powerOnWiFi() {
+// #ifdef DEBUG
+//   Serial.begin(115200);
+//   Serial.println();
+
+//  // attempt to connect to Wifi network:
+//   Serial.print("Connecting to Wifi SSID ");
+//   Serial.print(WIFI_SSID);
+// #endif
+//   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+//   secured_client.setTrustAnchors(&cert); // Add root certificate for api.telegram.org
+//   while (WiFi.status() != WL_CONNECTED)
+//   {
+// #ifdef DEBUG
+//     Serial.print(".");
+// #endif
+//     delay(500);
+//   }
+// #ifdef DEBUG
+//   Serial.print("\nWiFi connected. IP address: ");
+//   Serial.println(WiFi.localIP());
+
+//   Serial.print("Retrieving time: ");
+// #endif
+//   configTime(0, 0, "pool.ntp.org"); // get UTC time via NTP
+//   time_t now = time(nullptr);
+//   while (now < 24 * 3600)
+//   {
+// #ifdef DEBUG
+//     Serial.print(".");
+// #endif
+//     delay(100);
+//     now = time(nullptr);
+//   }
+// #ifdef DEBUG
+//     Serial.print(now);
+// #endif
+// }
+
 
 // // Function to send inline keyboard for light configuration
 // void sendLightConfigurationKeyboard(String chat_id) {
@@ -361,7 +540,16 @@ void handleNewMessage(telegramMessage &message) {
   } else if (text == "/set_schedule") {
     // Implement scheduling logic here
     // sendConfigurationKeyboard(chat_id);
-    
+    msg = "Please send back a configuration message similar to the one below:\n\n";
+    msg += "Light Configuration:\n";
+    msg += "  Start Hour: 18:00\n";
+    msg += "  Duration: 2 hours\n";
+    msg += "  Repeat Interval: 1 days\n";
+    msg += "  Brightness: 80\n";
+    msg += "Water Configuration:\n";
+    msg += "  Start Hour: 07:30\n";
+    msg += "  Duration: 30 minutes\n";
+    msg += "  Repeat Interval: 2 hours\n";
   } else if (text == "/cancel_schedule") {
     // Implement cancel scheduling logic here
     initDefaultConfig();
@@ -377,10 +565,28 @@ void handleNewMessage(telegramMessage &message) {
   } else if (text == "/set_light_schedule") {
     // Implement light scheduling logic here
     msg = "Light schedule set";
+  } else if (text == "/start_config") {
+    // Implement logic to get current configuration
+    msg = "Going to sleep\n";
+    saveConfigToEEPROM();
+    sleep = true;
+#ifdef DEBUG
+  Serial.println("Configuration saved to EEPROM!");
+  Serial.println("Pijama time!!");
+#endif   
   } else if (text == "/get_config") {
     // Implement logic to get current configuration
     msg = getConfigString();
-  } else if (text == "/help" || text == "/commands") {
+#ifdef DEBUG
+  print_on_serial_config();
+#endif   
+  } else if (text.startsWith("Light Configuration:")){
+    setConfigFromString(text);
+    msg = "New configuration setted!\n\n";
+#ifdef DEBUG
+  print_on_serial_config();
+#endif    
+  }else if (text == "/help" || text == "/commands") {
     msg = "Available Commands:\n";
     msg += "/status - Get system status\n";
     msg += "/water_now - Trigger immediate watering\n";
@@ -443,10 +649,23 @@ void setup() {
 #ifdef DEBUG
     Serial.print(now);
 #endif
-  initDefaultConfig();
+  if(isValidConfigInEEPROM()){
+  loadConfigFromEEPROM();
+#ifdef DEBUG
+  Serial.println("Configuration loaded from EEPROM!");
+#endif  
+  }else{
+    initDefaultConfig();
+#ifdef DEBUG
+  Serial.println("Default configration loaded!");
+#endif   
+  }
+
+
   pinMode(VALVE_O_PIN, OUTPUT);
   pinMode(VALVE_C_PIN, OUTPUT);
   pinMode(LED_PIN, OUTPUT);
+  controlWatering(false);
 }
 
 void handleNewMessages(int n_messages){
@@ -464,13 +683,37 @@ void handleNewMessages(int n_messages){
 }
 
 void loop() {
+  if (sleep){
+    powerOffWiFi();
+#ifdef DEBUG
+    Serial.println("WIFI OFF!");
+    Serial.end();
+#endif
+    ESP.deepSleep(5 * 1000000UL); 
+    delay(500);
+    ESP.restart();
+
+//     powerOnWiFi();
+// #ifdef DEBUG
+//     Serial.println("WIFI ON!");
+// #endif
+//     // loadConfigFromEEPROM();
+// #ifdef DEBUG
+//   Serial.println("Configuration loaded from EEPROM!");
+// #endif  
+//     sleep = false;
+// #ifdef DEBUG
+//     Serial.print("Time to wake up!!");
+// #endif
+  }
   int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
 
   while (numNewMessages)
   {
+#ifdef DEBUG
     Serial.println("got response");
+#endif
     handleNewMessages(numNewMessages);
     numNewMessages = bot.getUpdates(bot.last_message_received + 1);
   }
-
 }
