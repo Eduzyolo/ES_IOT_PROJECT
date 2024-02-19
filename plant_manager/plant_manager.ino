@@ -31,9 +31,9 @@ const byte signature[] = {0xAB, 0xCD, 0xEF}; // Example signature
 const int signatureLength = sizeof(signature);
 
 
-#define WIFI_SSID "Casa"
-#define WIFI_PASSWORD "C@as4N0$t&ra"
-#define BOT_TOKEN "6764956502:AAEszNKl0k1elYO1tfeu7JQ_yYgfCP3NiLU"
+#define WIFI_SSID ""
+#define WIFI_PASSWORD ""
+#define BOT_TOKEN ""
 
 
 enum stat_enum {ON, OFF};
@@ -588,17 +588,17 @@ void handleNewMessage(telegramMessage &message) {
 #endif    
   }else if (text == "/help" || text == "/commands") {
     msg = "Available Commands:\n";
-    msg += "/status - Get system status\n";
     msg += "/water_now - Trigger immediate watering\n";
-    msg += "/stop_watering - Stop watering\n";
-    msg += "/set_schedule - Set watering schedule\n";
-    msg += "/cancel_schedule - Cancel watering schedule\n";
-    msg += "/adjust_water_amount - Adjust water amount\n";
-    msg += "/light_status - Get LED status\n";
-    msg += "/toggle_lights - Toggle LEDs on/off\n";
-    msg += "/set_light_schedule - Set light schedule\n";
-    msg += "/get_config - Get current configuration\n";
-    msg += "/help - Show this help message\n";
+    msg += "/stop_watering - Stops water now\n";
+    msg += "/lights_on - Turn on lights\n";
+    msg += "/lights_off - Turn off lights\n";
+    msg += "/status - Get the current status of the system\n";
+    msg += "/set_schedule - Set or adjust the watering schedule\n";
+    msg += "/cancel_schedule - Cancel the existing watering schedule\n";
+    msg += "/get_config - Retrieve the current configuration settings of the system\n";
+    msg += "/start_config - Starts the actual configuration\n";
+    msg += "/help - List available commands and instructions on how to use them\n";
+
     // } else if (bot.messages[bot.last_message_received].type == "callback_query"){
     
     } else{
