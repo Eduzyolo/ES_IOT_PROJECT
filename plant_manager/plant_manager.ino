@@ -31,9 +31,9 @@ const byte signature[] = {0xAB, 0xCD, 0xEF}; // Example signature
 const int signatureLength = sizeof(signature);
 
 
-#define WIFI_SSID ""
-#define WIFI_PASSWORD ""
-#define BOT_TOKEN ""
+#define WIFI_SSID "iPhone"
+#define WIFI_PASSWORD "ciao0000"
+#define BOT_TOKEN "6764956502:AAEszNKl0k1elYO1tfeu7JQ_yYgfCP3NiLU"
 
 
 enum stat_enum {ON, OFF};
