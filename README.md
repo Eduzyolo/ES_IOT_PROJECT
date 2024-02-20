@@ -12,7 +12,7 @@ This project involves implementing a Telegram bot on the NodeMCU board to contro
 - Two 1 Mohm resistors
 - Battery: Two 1.5V alkaline batteries
 - One photoresistor
-- One LED
+- Three LEDs
 - Valve with a DC motor
 - Breadboard and jumper wires
 
@@ -27,13 +27,19 @@ This project involves implementing a Telegram bot on the NodeMCU board to contro
 
 ## Project Layout
 
+```bash
+Root
+├───IMAGES
+└───plant_manager
+```
 The project consists of a single `.ino` file containing the entire codebase.
+The file `.ino` is contained in the `plant_manager` folder.
 
 ## How to Build, Burn, and Run the Project
 
 ### Hardware setup
 
-![Partial Schema](./Not_full_circuit.PNG)
+![Partial Schema](./IMAGES/Not_full_circuit.PNG)
 
 Pin Configuration:
 
@@ -71,7 +77,7 @@ Pin Configuration:
 
 To interact with the Telegram bot, users can send commands to perform various actions:
 - `/status` - Get the current status of the system, including LED status, light brightness, battery status, time to sleep, and valve status.
-- `/water_now` - Trigger an immediate watering action.
+- `/water_now` - Trigger an imme diate watering action.
 - `/stop_watering` - Stop any ongoing watering action.
 - `/set_schedule` - Set a new watering and lighting schedule. Users are prompted to send back a configuration message.
 - `/cancel_schedule` - Cancel any existing watering schedule and revert to default settings.
@@ -86,7 +92,7 @@ To interact with the Telegram bot, users can send commands to perform various ac
 ## Links
 
 - [PowerPoint Presentation](https://docs.google.com/presentation/d/1spj2HcZenDA0uLviqj0DZPADTSwyJ2v3q2OWaiarDB0/edit?usp=sharing)
-- [YouTube Video](link_to_video)
+- [YouTube Video](https://drive.google.com/file/d/1tvxH9VpzS5MMgBP_iXVNXMXUX0iw8Jnu/view?usp=sharing)
 
 ## Team Members
 
